@@ -215,13 +215,7 @@ namespace Luna.Services.Data.Luna.AI
             await _productAPIVersionAPIM.CreateAsync(version);
             
             var operationTypes = GetOperationTypes(product.ProductType);
-            foreach (var operationType in operationTypes)
-            {
-                var operation = _operationAPIM.GetOperation(operationType);
-                await _operationAPIM.CreateAsync(version, operation);
-                await _policyAPIM.CreateAsync(version, operation.name, operationType);
-            }
-            /*List<Thread> workerThreads = new List<Thread>();
+            List<Thread> workerThreads = new List<Thread>();
             foreach (var operationType in operationTypes)
             {
                 Thread thread = new Thread(async () => {
@@ -232,7 +226,7 @@ namespace Luna.Services.Data.Luna.AI
                 workerThreads.Add(thread);
                 thread.Start();
             }
-            foreach (Thread thread in workerThreads) thread.Join();*/
+            foreach (Thread thread in workerThreads) thread.Join();
 
 
             // Add apiVersion to db
