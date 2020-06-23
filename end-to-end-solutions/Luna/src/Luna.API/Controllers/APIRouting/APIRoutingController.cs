@@ -10,6 +10,7 @@ using Luna.Services.Data;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Luna.Clients.Azure.Auth;
 
 namespace Luna.API.Controllers.Admin
 {
@@ -28,6 +29,7 @@ namespace Luna.API.Controllers.Admin
         private readonly IAPISubscriptionService _apiSubscriptionService;
         private readonly ILogger<ProductController> _logger;
         private readonly IUserAPIM _userAPIM;
+        private readonly IKeyVaultHelper _keyVaultHelper;
 
         /// <summary>
         /// Constructor that uses dependency injection.
@@ -35,13 +37,14 @@ namespace Luna.API.Controllers.Admin
         /// <param name="logger">The logger.</param>
         public APIRoutingController(IAPIVersionService apiVersionService, IAMLWorkspaceService amlWorkspaceService, IAPISubscriptionService apiSubscriptionService,
             ILogger<ProductController> logger,
-            IUserAPIM userAPIM)
+            IUserAPIM userAPIM, IKeyVaultHelper keyVaultHelper)
         {
             _apiVersionService = apiVersionService ?? throw new ArgumentNullException(nameof(apiVersionService));
             _amlWorkspaceService = amlWorkspaceService ?? throw new ArgumentNullException(nameof(amlWorkspaceService));
             _apiSubscriptionService = apiSubscriptionService ?? throw new ArgumentNullException(nameof(apiSubscriptionService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _userAPIM = userAPIM ?? throw new ArgumentNullException(nameof(userAPIM));
+            _keyVaultHelper = keyVaultHelper;
         }
 
         /// <summary>
@@ -221,8 +224,10 @@ namespace Luna.API.Controllers.Admin
         /// <returns>HTTP 200 OK with apiVersion JSON objects in response body.</returns>
         [HttpGet("products/{productName}/deployments/{deploymentName}/subscriptions/{subscriptionId}/operations")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        public async Task<ActionResult> GetAllBatchInferenceOperations(string productName, string deploymentName, Guid subscriptionId, [FromQuery(Name = "userid")] string userId, [FromQuery(Name = "api-version")] string versionName)
+        public async Task<ActionResult> GetAllBatchInferenceOperations(string productName, string deploymentName, Guid subscriptionId, [FromQuery(Name = "userid")] string userId, [FromQuery(Name = "api-version")] string versionName, [FromQuery(Name = "clientCert")] string clientCert)
         {
+            var certAuth = new CertAuthHelper(_keyVaultHelper);
+            certAuth.VerifyUserAccess(clientCert, _logger);
             var apiSubcription = await _apiSubscriptionService.GetAsync(subscriptionId);
             if (apiSubcription == null)
             {
