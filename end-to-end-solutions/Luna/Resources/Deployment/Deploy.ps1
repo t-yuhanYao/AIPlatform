@@ -35,6 +35,16 @@
     
     [string]$apiWebAppInsightsName = "default",
 
+    [string]$apimName = "default",
+
+    [string]$apimTier = "Developer",
+
+    [string]$apimCapacity = 1,
+
+    [string]$amlWorkspaceName = "default",
+
+    [string]$amlWorkspaceSku = "Basic",
+
     [string]$azureMarketplaceAADApplicationName = "default",
 
     [string]$azureMarketplaceAADApplicationId = "00000000-0000-0000-0000-000000000000",
@@ -130,7 +140,7 @@ function Create-AzureADApplication{
 function GrantKeyVaultAccessToWebApp{
     param($resourceGroupName, $keyVaultName, $webAppName)
     $webapp = Get-AzWebApp -ResourceGroupName $resourceGroupname -Name $webAppName
-    Set-AzKeyVaultAccessPolicy -VaultName $keyVaultName -ObjectId $webapp.Identity.PrincipalId -PermissionsToSecrets list,get
+    Set-AzKeyVaultAccessPolicy -VaultName $keyVaultName -ObjectId $webapp.Identity.PrincipalId -PermissionsToSecrets list,get,set,delete
 }
 
 function Get-PublishingProfileCredentials($resourceGroupName, $webAppName){
@@ -240,6 +250,8 @@ $enduserWebAppName = GetNameForAzureResources -defaultName $enduserWebAppName -r
 $apiWebAppName = GetNameForAzureResources -defaultName $apiWebAppName -resourceTypeSuffix "-apiapp" -uniqueName $uniqueName
 $apiWebJobName = GetNameForAzureResources -defaultName $apiWebJobName -resourceTypeSuffix "-apiwebjob" -uniqueName $uniqueName
 $apiWebAppInsightsName = GetNameForAzureResources -defaultName $apiWebAppInsightsName -resourceTypeSuffix "-apiappinsights" -uniqueName $uniqueName
+$apimName = GetNameForAzureResources -defaultName $apimName -resourceTypeSuffix "-apim" -uniqueName $uniqueName
+$amlWorkspaceName = GetNameForAzureResources -defaultName $amlWorkspaceName -resourceTypeSuffix "-aml" -uniqueName $uniqueName
 
 $azureMarketplaceAADApplicationName = GetNameForAzureResources -defaultName $azureMarketplaceAADApplicationName -resourceTypeSuffix "-azuremarketplace-aad" -uniqueName $uniqueName
 $azureResourceManagerAADApplicationName = GetNameForAzureResources -defaultName $azureResourceManagerAADApplicationName -resourceTypeSuffix "-azureresourcemanager-aad" -uniqueName $uniqueName
@@ -271,7 +283,7 @@ if ($userApplicationSubscriptionId -eq "default"){
     $userApplicationSubscriptionId = $currentContext.Subscription.Id
 }
 
-$currentUser = Get-AzADUser -Mail $accountId
+$currentUser = Get-AzADUser -UserPrincipalName $accountId
 
 
 if ($adminAccounts -eq "default"){
@@ -284,6 +296,8 @@ Write-Host "Create resource group" $resourceGroupName
 New-AzResourceGroup -Name $resourceGroupName -Location $location
 
 Write-Host "Deploy ARM template in resource group" $resourceGroupName
+$deployAPIM = $enableV2 -eq 'true'
+$deployAML = $enableV2 -eq 'true'
 New-AzResourceGroupDeployment -ResourceGroupName $resourceGroupName `
                               -TemplateFile .\main.json `
                               -keyVaultName $keyVaultName `
@@ -300,7 +314,16 @@ New-AzResourceGroupDeployment -ResourceGroupName $resourceGroupName `
                               -sqlAdministratorUsername $sqlServerAdminUsername `
                               -tenantId $tenantId `
                               -objectId $objectId `
-                              -buildLocation $buildLocation
+                              -buildLocation $buildLocation `
+                              -apimAdminEmail $accountId `
+                              -orgName $companyName `
+                              -apimName $apimName `
+                              -apimTier $apimTier `
+                              -apimCapacity $apimCapacity `
+                              -deployAPIM $deployAPIM `
+                              -workspaceName $amlWorkspaceName `
+                              -workspaceSku $amlWorkspaceSku `
+                              -deployAML $deployAML
 
 
 $filter = "AppId eq '"+$webAppAADApplicationId+"'"
@@ -375,6 +398,10 @@ if ($isNewApp){
     Write-Host "Assign subscription contribution role to the service principal."
     $scope = '/subscriptions/'+$userApplicationSubscriptionId
     NewAzureRoleAssignment -objectId $principalId -scope $scope -retryCount 10
+    
+    Write-Host "Assign contribution role on the AML workspace to the service principal."
+    $scope = '/subscriptions/'+$userApplicationSubscriptionId+'/resourceGroups/'+$resourceGroupName+'/providers/Microsoft.MachineLearningServices/workspaces/'+$amlWorkspaceName
+    NewAzureRoleAssignment -objectId $principalId -scope $scope -retryCount 10
 }
 
 #grant key vault access to API app
@@ -421,6 +448,25 @@ $connectionString = "Server=tcp:" + $sqlServerInstanceName + ",1433;Initial Cata
 $secretvalue = ConvertTo-SecureString $connectionString -AsPlainText -Force
 Set-AzKeyVaultSecret -VaultName $keyVaultName -Name 'connection-string' -SecretValue $secretvalue
 
+$apimTenantAccessId = 'integration'
+$controllerBaseUrl = ''
+
+if ($enableV2 -eq 'true'){
+    Write-Host "Get APIM management key"
+    $apimContext = New-AzApiManagementContext -ResourceGroupName $resourceGroupName -ServiceName $apimName
+    Set-AzApiManagementTenantAccess -Context $apimContext -Enabled $True
+
+    $tenantAccess = Get-AzApiManagementTenantAccess -Context $apimContext
+    $tenantAccessSecret = Get-AzApiManagementTenantAccessSecret -Context $apimContext
+    $apimPrimaryKey = $tenantAccessSecret.PrimaryKey
+    $secretvalue = ConvertTo-SecureString $apimPrimaryKey -AsPlainText -Force
+    Set-AzKeyVaultSecret -VaultName $keyVaultName -Name 'apim-key' -SecretValue $secretvalue
+    
+    $apimTenantAccessId = $tenantAccess.Id
+    $controllerBaseUrl = "https://"+ $apiWebAppName +".azurewebsites.net"
+}
+
+
 Write-Host "Update app settings"
 $appsettings = @{}
 $appsettings["SecuredCredentials:VaultName"] = $keyVaultName;
@@ -437,6 +483,15 @@ $appsettings["AzureAD:ClientId"] = $webAppAADApplicationId;
 $appsettings["AzureAD:TenantId"] = $tenantId;
 $appsettings["ISVPortal:AdminAccounts"] = $adminAccounts;
 $appsettings["ISVPortal:AdminTenant"] = $adminTenantId;
+
+$appsettings["SecuredCredentials:APIM:Config:VaultName"] = $keyVaultName;
+$appsettings["SecuredCredentials:APIM:Config:SubscriptionId"] = $lunaServiceSubscriptionId;
+$appsettings["SecuredCredentials:APIM:Config:ResourceGroupName"] = $resourceGroupName;
+$appsettings["SecuredCredentials:APIM:Config:APIMServiceName"] = $apimName;
+$appsettings["SecuredCredentials:APIM:Config:APIVersion"] = '2019-12-01';
+$appsettings["SecuredCredentials:APIM:Config:UId"] = $apimTenantAccessId;
+$appsettings["SecuredCredentials:APIM:Config:Key"] = 'apim-key';
+$appsettings["SecuredCredentials:APIM:Config:ControllerBaseUrl"] = $controllerBaseUrl;
 
 $appInsightsApp = Get-AzApplicationInsights -ResourceGroupName $resourceGroupName -name $apiWebAppInsightsName
 $appsettings["ApplicationInsights:InstrumentationKey"] = $appInsightsApp.InstrumentationKey;
